@@ -1,17 +1,16 @@
-"""Solve a fractional ODE using KAN and derive a symbolic form.
+"""Solve a fractional ODE using KAN and expose a symbolic formula.
 
-This script trains a simple 1D Kolmogorov--Arnold Network on a fractional
-ordinary differential equation (ODE).  After fitting the network we call
-``auto_symbolic`` to convert the learned splines to closed form symbolic
-expressions and continue training with those expressions fixed.
-
-The default equation solved here is
+This demo is inspired by the notebook examples in ``tutorials/Example`` and
+illustrates several advantages of Kolmogorov--Arnold Networks: a small network
+can accurately solve a differential equation, the grid can be refined for higher
+precision, and the learned activation functions can be automatically converted to
+closed-form expressions.  We solve the fractional ODE
 
 .. math:: \partial_t^\alpha u + u = f(t), \qquad u(0)=0,
 
-with an analytic solution :math:`u(t)=t^{5+\alpha}` when
-``f`` is chosen appropriately.  The order ``alpha`` as well as the time
-grid can be changed from the command line.
+whose analytic solution is :math:`u(t)=t^{5+\alpha}` for a suitable forcing
+``f``.  The order ``alpha`` as well as the grid resolution can be changed from
+the command line.
 """
 
 import argparse
@@ -81,19 +80,51 @@ def main():
         default=200,
         help="additional steps after auto_symbolic",
     )
+    parser.add_argument("--grid", type=int, default=5, help="initial grid size")
+    parser.add_argument(
+        "--refine",
+        type=int,
+        default=0,
+        help="refine to this grid after the first training phase (0 to skip)",
+    )
+    parser.add_argument(
+        "--hidden",
+        type=int,
+        default=1,
+        help="number of hidden neurons",
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="prune the network after auto_symbolic",
+    )
     args = parser.parse_args()
 
     tau = args.T / args.nt
     t = torch.linspace(0, args.T, steps=args.nt).view(-1, 1)
 
-    model = KAN(width=[1, 1], grid=5, k=3, grid_eps=1.0, noise_scale_base=0.25)
+    width = [1, args.hidden, 1]
+    model = KAN(width=width, grid=args.grid, k=3, grid_eps=1.0, noise_scale_base=0.25)
     model.speed()  # disable symbolic bookkeeping during the numeric phase
 
     train(model, t, tau, args.alpha, args.nt, steps=args.steps)
 
+    # optional grid refinement
+    if args.refine and args.refine != args.grid:
+        model.save_act = True
+        model.get_act(t)
+        model = model.refine(args.refine)
+        model.speed()
+        train(model, t, tau, args.alpha, args.nt, steps=args.steps)
+
     # switch on symbolic branch and search for analytic forms
     model.symbolic_enabled = True
     model.auto_symbolic()
+
+    # optional pruning to promote interpretability
+    if args.prune:
+        model.get_act(t)
+        model = model.prune()
 
     # fine tune with symbolic edges fixed
     train(model, t, tau, args.alpha, args.nt, steps=args.symbolic_steps)
